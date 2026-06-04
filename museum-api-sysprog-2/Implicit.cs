@@ -1,0 +1,12 @@
+global using museum_api_sysprog_1.CacheStructure;
+global using museum_api_sysprog_1.Logging;
+global using museum_api_sysprog_1.Settings;
+global using museum_api_sysprog_1.Entities;
+global using museum_api_sysprog_1.Exceptions;
+global using museum_api_sysprog_1.Interfaces;
+global using museum_api_sysprog_1.Mappers;
+global using System;
+global using System.Collections.Concurrent;
+global using System.Collections.Generic;
+global using System.Threading;
+global using museum_api_sysprog_1.Web;
