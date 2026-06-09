@@ -8,7 +8,7 @@ class Program
         try
         {
             //TODO: obrisi ovo i vrati u normalu
-            ThreadPool.SetMinThreads(500, 500);
+            //ThreadPool.SetMinThreads(500, 500);
 
             var settings = new AppSettings
             {

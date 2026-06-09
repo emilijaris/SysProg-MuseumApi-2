@@ -24,7 +24,7 @@ public class WebServer
     private readonly AppSettings _settings;
     // private volatile bool _isRunning = true;
 
-    private readonly CancellationTokenSource _cTokenSource=new CancellationTokenSource();
+    private readonly CancellationTokenSource _cTokenSource = new CancellationTokenSource();
 
     public WebServer(AppSettings settings, WebService webService)
     {
@@ -45,7 +45,7 @@ public class WebServer
 
         for (int i = 0; i < _maxWorkerTasks; i++)
         {
-            _workerTasks.Add(Task.Run(()=>ProcessQueueAsync(_cTokenSource.Token)));
+            _workerTasks.Add(Task.Run(() => ProcessQueueAsync(_cTokenSource.Token)));
         }
         while (!_cTokenSource.Token.IsCancellationRequested)
         {
@@ -53,8 +53,8 @@ public class WebServer
             {
                 // GetContext blokira nit dok klijent ne posalje zahtev
                 var context = _listener.GetContext();
-                if(!_cTokenSource.Token.IsCancellationRequested)
-                     _requestQueue.Add(context);
+                if (!_cTokenSource.Token.IsCancellationRequested)
+                    _requestQueue.Add(context);
             }
             catch (HttpListenerException) when (_cTokenSource.Token.IsCancellationRequested)
             {
@@ -74,8 +74,8 @@ public class WebServer
     {
         foreach (var context in _requestQueue.GetConsumingEnumerable())
         {
-            if(token.IsCancellationRequested)
-                 break;
+            if (token.IsCancellationRequested)
+                break;
             await Task.Run(() => HandleRequest(context));
             //gde treba continue with da dodamo? 
 
@@ -93,7 +93,7 @@ public class WebServer
             {
                 //to je zbog one dosadne ikonice
                 //ako nema parametara (da ne bi konstanto bio log sa praznim parametrima)
-               await RespondWithJson(context, new List<Painting>());
+                await RespondWithJson(context, new List<Painting>());
                 return;
             }
             var builder = new StringBuilder();
@@ -122,26 +122,31 @@ public class WebServer
             }
 
 
-          Task responseTask=  RespondWithJson(context, paintings);
-           await responseTask.ContinueWith(t=>
-           {
-               sw.Stop();
-            Logger.Log("TIMER", $"Zahtev {fullQuery} obradjen za {sw.ElapsedMilliseconds}");
-            if(t.IsFaulted)
-               {
-                   Logger.Log("SERVER_ERROR",$"Prekinuta veza pre uspesnog primljenog odgovora");
-               }
-           },TaskContinuationOptions.ExecuteSynchronously);
+            Task responseTask = RespondWithJson(context, paintings);
+            await responseTask.ContinueWith(t =>
+            {
+                sw.Stop();
+                Logger.Log("TIMER", $"Zahtev {fullQuery} obradjen za {sw.ElapsedMilliseconds}");
+                if (t.IsFaulted)
+                {
+                    Logger.Log("SERVER_ERROR", $"Prekinuta veza pre uspesnog primljenog odgovora");
+                }
+            }, TaskContinuationOptions.ExecuteSynchronously);
         }
         catch (MuseumException ex)
         {
             context.Response.StatusCode = ex.StatusCode != 0 ? ex.StatusCode : 500;
-           await RespondWithText(context, ex.ApiMessage ?? ex.Message);
+            await RespondWithText(context, ex.ApiMessage ?? ex.Message);
+        }
+        catch (OperationCanceledException ex)
+        {
+            Logger.Log("SERVER", $"Zahtev prekinut usled gašenja servera: {ex.Message}");
+            await RespondWithText(context, "Server se gasi. Zahtev je otkazan.");
         }
         catch (Exception ex)
         {
             context.Response.StatusCode = 500;
-           await  RespondWithText(context, "Interna greska servera:  " + ex.Message);
+            await RespondWithText(context, "Interna greska servera:  " + ex.Message);
 
         }
 
