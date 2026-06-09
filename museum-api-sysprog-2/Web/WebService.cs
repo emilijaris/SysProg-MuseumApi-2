@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Net.Http;
 using System.Linq;
 using System.Net;
+using System.Threading.Tasks;
 
 namespace museum_api_sysprog_1.Web
 {
@@ -11,7 +12,6 @@ namespace museum_api_sysprog_1.Web
         private readonly AppSettings _settings;
         private readonly HttpClient _httpClient = new();
         //ovo sam dodala da probam samo
-        //sinhronizacija i kes stampedo kod taskova???
         private readonly ConcurrentDictionary<string, QueryCacheEntry> _queryCache = new();
         public WebService(AppSettings settings, Cache cache)
         {
@@ -29,40 +29,37 @@ namespace museum_api_sysprog_1.Web
             Array.Sort(parts);
             return string.Join("&", parts).ToLower();
         }
-        public List<Painting> GetPainting(string query)
+        public async Task< List<Painting>?> GetPainting(string query)
         {
             var paintings = new List<Painting>();
+
+
             //isti zahtevi sa razlicitim redosledom parametara
             var key = GenerateKey(query);
             var queryEntry = _queryCache.GetOrAdd(key, _ => new QueryCacheEntry());
-
             List<int> ids = new List<int>();
 
-            lock (queryEntry)
+           //samo jedna nit za ovaj konkretan deo ulazi unutra
+            await queryEntry.Semaphore.WaitAsync();
+            try
             {
-                while (queryEntry.isLoading)
-                {
-                    Monitor.Wait(queryEntry);
-                }
 
+                //ako je prvi nivo zahteva vec u kesu
                 if (queryEntry.Ids != null && queryEntry.Expiration > DateTime.Now)
                 {
-
                     ids = queryEntry.Ids;
-                    Logger.Log("SERVER", $"Zahtev {query} je vec obradjen");
+                    Logger.Log("SERVER", $"[QUERY HIT] Zahtev [{query}] je već obradjen, uzimam ID-jeve iz kesa.");
                 }
                 else
                 {
-                    queryEntry.isLoading = true;
-                    try
+                    Logger.Log("SERVER", $"[QUERY MISS] Pokrece se zahtev za ID-jeve upita [{query}]");
+                    var url = _settings.GetApiUrl(query);
+                    var response =await _httpClient.GetAsync(url);
+
+                    if (response.IsSuccessStatusCode)
                     {
-                        var url = _settings.GetApiUrl(query);
-                        var response = _httpClient.GetAsync(url).Result;
-
-                        if (!response.IsSuccessStatusCode)
-                            return paintings;
-
-                        var searchJson = response.Content.ReadAsStringAsync().Result;
+                        
+                        var searchJson = await response.Content.ReadAsStringAsync();
                         using (JsonDocument document = JsonDocument.Parse(searchJson))
                         {
                             if (document.RootElement.TryGetProperty("objectIDs", out var idsElement) && idsElement.ValueKind == JsonValueKind.Array)
@@ -76,89 +73,93 @@ namespace museum_api_sysprog_1.Web
                                 queryEntry.Expiration = DateTime.Now.AddMinutes(5);
                             }
                         }
-                    }
-                    catch (HttpRequestException ex)
-                    {
-                        Logger.Log("SERVER", $"Greška pri dobavljanju ID-jeva: {ex.Message}");
-                        return paintings;
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Log("SERVER", $"Greška pri dobavljanju ID-jeva: {ex.Message}");
-                        return paintings;
-                    }
-                    finally
-                    {
-                        queryEntry.isLoading = false;
-                        Monitor.PulseAll(queryEntry);
+                        
                     }
                 }
-            }
+            
+             }
+                catch (HttpRequestException ex)
+                {
+                     Logger.Log("SERVER", $"Greska pri dobavljanju ID-jeva: {ex.Message}");
+                     return paintings;
+                }
+                 catch (Exception ex)
+                 {
+                    Logger.Log("SERVER", $"Greska pri dobavljanju ID-jeva: {ex.Message}");
+                     return paintings;
+                }
+                finally
+                { 
+                    //oslobadjanje semafora
+                     queryEntry.Semaphore.Release();
+                }
+                
+            if (ids == null || ids.Count == 0)
+                return paintings;
 
-            foreach (var id in ids)
+        //kreira se kolekcija, tako da se za svaki task proveri LRU kes
+             IEnumerable<Task<Painting?>> fetchTasks = ids.Select(async id =>
             {
+                // uzimamo entry iz tvog LRU kesa
                 var entry = _cache.GetOrCreateEntry(id);
 
-                if (entry.IsLoading)
+                
+                if (entry.Data != null && entry.IsValid)
                 {
-                    lock (entry)
+                    return entry.Data;
+                }
+
+                // asinhrono zakljucavanje 
+                await entry.Semaphore.WaitAsync();
+                try
+                {
+                
+                    if (entry.Data != null && entry.IsValid)
                     {
-                        while (entry.IsLoading)
-                        {
-                            Monitor.Wait(entry);
-                        }
+                        Logger.Log("SERVER", $"[HIT] Slika {id} uzeta iz kesa.");
+                        return entry.Data as Painting;
+                    }
+
+                    var dataUrl = $"https://collectionapi.metmuseum.org/public/collection/v1/objects/{id}";
+                    var dataResult = await _httpClient.GetAsync(dataUrl);
+
+                    if (dataResult.IsSuccessStatusCode)
+                    {
+                        var dataJson = await dataResult.Content.ReadAsStringAsync();
+                        
+                    
+                        entry.Data = JsonMapper.MapFromJson(dataJson);
+                        entry.TimeCreated = DateTime.Now;
+                        entry.IsValid = true;
+
+                        return entry.Data;
+                    }
+                    else
+                    {
+                        entry.IsValid = false;
+                        Logger.Log("SERVER", $"Greska pri povlacenju ID-ja {id}: {dataResult.StatusCode}");
+                        return null;
                     }
                 }
-
-                if (entry.Data == null || !entry.IsValid)
+                catch (Exception ex)
                 {
-                    lock (entry)
-                    {
-                        if (entry.Data == null || !entry.IsValid)
-                        {
-                            try
-                            {
-                                entry.IsLoading = true;
-                                var dataUrl = $"https://collectionapi.metmuseum.org/public/collection/v1/objects/{id}";
-                                var dataResult = _httpClient.GetAsync(dataUrl).Result;
-
-                                if (dataResult.IsSuccessStatusCode)
-                                {
-                                    var dataJson = dataResult.Content.ReadAsStringAsync().Result;
-                                    entry.Data = JsonMapper.MapFromJson(dataJson);
-                                    entry.TimeCreated = DateTime.Now;
-                                    entry.IsValid = true;
-                                }
-                                else
-                                {
-                                    entry.IsValid = false;
-                                    Logger.Log("SERVER", $"Server error id {id} status {dataResult.StatusCode}");
-                                }
-                            }
-                            catch (Exception)
-                            {
-                                entry.IsValid = false;
-                            }
-                            finally
-                            {
-                                entry.IsLoading = false;
-                                Monitor.PulseAll(entry);
-                            }
-                        }
-                    }
+                    entry.IsValid = false;
+                     Logger.Log("SERVER", $"Izuzetak za ID {id}: {ex.Message}");
+                    return null;
                 }
-                else
+                finally
                 {
-                    Logger.Log("Server", $"Podatak {id} je vec u kesu");
+                    entry.Semaphore.Release(); // oslobadjamo semafor 
                 }
+            });
 
-                if (entry.Data is Painting p)
-                {
-                    paintings.Add(p);
-                }
+            // Task.WhenAll ispaljuje svih 20 mreznih poziva odjednom, asinhrono
+            Painting?[] results = await Task.WhenAll(fetchTasks);
+
+            // filtriramo uspesno mapirane objekte 
+            return results.Where(p => p != null).Cast<Painting>().ToList();
+
             }
-
-            return paintings;
-        }
     }
-}
+   
+ }

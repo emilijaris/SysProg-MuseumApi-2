@@ -5,9 +5,11 @@ namespace museum_api_sysprog_1.CacheStructure;
 public class CacheEntry
 {
     public Painting? Data { get; set; }
-    public bool IsLoading { get; set; } = false;
+    // public bool IsLoading { get; set; } = false;
     //vreme kreiranja stavke u kesu
     public DateTime TimeCreated { get; set; } = DateTime.Now;
     public bool IsValid { get; set; } = true;
+
+    public SemaphoreSlim Semaphore { get; } = new SemaphoreSlim(1, 1);
 
 }

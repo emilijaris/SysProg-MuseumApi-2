@@ -28,7 +28,7 @@ public class Cache
                 continue;
             Logger.Log("JANITOR", "Provera isteka stavki...");
             var zaBrisanje = _cache.Where(kvp =>
-                !kvp.Value.IsLoading &&
+                kvp.Value.Semaphore.CurrentCount==1 &&
                 (DateTime.Now - kvp.Value.TimeCreated).TotalSeconds > _settings.CacheTimeLimit)
                 .Select(kvp => kvp.Key)
                 .ToList();
@@ -36,12 +36,13 @@ public class Cache
             foreach (var key in zaBrisanje)
             {
                 // TryRemove osigurava da samo jedna nit (Janitor) zapravo
-                if (_cache.TryRemove(key, out _))
+                if (_cache.TryRemove(key, out var entry))
                 {
                     lock (_lruLock)
                     {
                         _accessOrder.Remove(key);
                     }
+                    entry.Semaphore.Dispose();
                     Logger.Log("JANITOR", $"Obrisan ID {key}");
                 }
             }
@@ -79,7 +80,7 @@ public class Cache
                 }
             }
             // Update LRU samo ako nije u toku ucitavanje
-            if (!entry.IsLoading)
+            // if (!entry.IsLoading)
                 UpdateLRU(key);
         }
         return entry;
@@ -102,8 +103,12 @@ public class Cache
         {
             int najstariji = _accessOrder.First.Value;
             _accessOrder.RemoveFirst();
-            _cache.TryRemove(najstariji, out _);
-            Logger.Log("KEŠ", $"Uklonjen ID {najstariji}");
+            if(_cache.TryRemove(najstariji, out var entry))
+            {
+                entry.Semaphore.Dispose();
+                Logger.Log("KEŠ", $"Uklonjen ID {najstariji}");
+            }
+            
         }
     }
 }
