@@ -11,6 +11,7 @@ namespace museum_api_sysprog_1.Web
         private readonly AppSettings _settings;
         private readonly HttpClient _httpClient = new();
         //ovo sam dodala da probam samo
+        //sinhronizacija i kes stampedo kod taskova???
         private readonly ConcurrentDictionary<string, QueryCacheEntry> _queryCache = new();
         public WebService(AppSettings settings, Cache cache)
         {
@@ -19,7 +20,6 @@ namespace museum_api_sysprog_1.Web
             ServicePointManager.DefaultConnectionLimit = 100; // Dozvoljava vise mreznih izlaza odjednom
             //ovo je malo gusilo server
         }
-
         private string GenerateKey(string query)
         {
             if (string.IsNullOrWhiteSpace(query))

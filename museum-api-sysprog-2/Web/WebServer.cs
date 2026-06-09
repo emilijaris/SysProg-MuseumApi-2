@@ -2,13 +2,24 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Tasks;
 
 namespace museum_api_sysprog_1.Web;
 
 public class WebServer
 {
     private readonly HttpListener _listener = new();
-
+    //dodala sam blocking collection 
+    //zasto? 
+    //jer : 
+    /*
+    .Add(item) probudice se jedan radnik/task i preuzeti ovo 
+    .GetConsumingEnumerable() – svi raspolozivi taskovi pokrecu petlju i proveravaju da li postoji taskova za rad
+    */
+    private readonly BlockingCollection<HttpListenerContext> _requestQueue = new();
+    //dodala sam ovde (treba prebaciti u settings)
+    private readonly int _maxWorkerTasks = 4;
+    private readonly List<Task> _workerTasks = new();
     private readonly WebService _webService;
     private readonly AppSettings _settings;
     private volatile bool _isRunning = true;
@@ -24,16 +35,23 @@ public class WebServer
     {
         _listener.Start();
         Logger.Log("SERVER", $"Web server pokrenut na {_settings.GetListenerPrefix()}");
+        //rekle smo ostaje nit a pogledacemo cancelation tokene
+
         Thread shutdownWatcher = new Thread(ListenForShutdown);
         shutdownWatcher.IsBackground = true;
         shutdownWatcher.Start();
+
+        for (int i = 0; i < _maxWorkerTasks; i++)
+        {
+            _workerTasks.Add(Task.Run(ProcessQueueAsync));
+        }
         while (_isRunning)
         {
             try
             {
                 // GetContext blokira nit dok klijent ne posalje zahtev
                 var context = _listener.GetContext();
-                ThreadPool.QueueUserWorkItem(HandleRequest, context);
+                _requestQueue.Add(context);
             }
             catch (HttpListenerException) when (!_isRunning)
             {
@@ -41,9 +59,19 @@ public class WebServer
                 break;
             }
         }
+        _requestQueue.CompleteAdding();
+        Task.WaitAll(_workerTasks.ToArray());
         Logger.Log("SERVER", "Server je uspešno zaustavljen.");
     }
+    private async Task ProcessQueueAsync()
+    {
+        foreach (var context in _requestQueue.GetConsumingEnumerable())
+        {
+            await Task.Run(() => HandleRequest(context));
+            //gde treba continue with da dodamo? 
 
+        }
+    }
     private void HandleRequest(object? state)
     {
         var context = (HttpListenerContext)state!;
@@ -112,14 +140,14 @@ public class WebServer
         }
     }
 
-    private void RespondWithJson(HttpListenerContext context, object content)
+    private async Task RespondWithJson(HttpListenerContext context, object content)
     {
         try
         {
             byte[] buffer = JsonSerializer.SerializeToUtf8Bytes(content, new JsonSerializerOptions { WriteIndented = true });
             context.Response.ContentType = "application/json";
             context.Response.ContentLength64 = buffer.Length;
-            context.Response.OutputStream.Write(buffer, 0, buffer.Length);
+            await context.Response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
         }
         finally
         {
@@ -127,13 +155,13 @@ public class WebServer
         }
     }
 
-    private void RespondWithText(HttpListenerContext context, string text)
+    private async Task RespondWithText(HttpListenerContext context, string text)
     {
         try
         {
             byte[] buffer = Encoding.UTF8.GetBytes(text);
             context.Response.ContentLength64 = buffer.Length;
-            context.Response.OutputStream.Write(buffer, 0, buffer.Length);
+            await context.Response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
             context.Response.OutputStream.Close();
         }
         catch (ObjectDisposedException ex)

@@ -7,6 +7,7 @@ class Program
         Console.WriteLine("=== MUSEUM API SERVER STARTUP ===");
         try
         {
+            //TODO: obrisi ovo i vrati u normalu
             ThreadPool.SetMinThreads(500, 500);
 
             var settings = new AppSettings
