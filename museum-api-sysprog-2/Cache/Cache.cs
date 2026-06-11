@@ -101,12 +101,12 @@ public class Cache
     {
         if (_accessOrder.First != null)
         {
-            int najstariji = _accessOrder.First.Value;
+            int oldest = _accessOrder.First.Value;
             _accessOrder.RemoveFirst();
-            if(_cache.TryRemove(najstariji, out var entry))
+            if(_cache.TryRemove(oldest, out var entry))
             {
                 entry.Semaphore.Dispose();
-                Logger.Log("KEŠ", $"Uklonjen ID {najstariji}");
+                Logger.Log("KEŠ", $"Uklonjen ID {oldest}");
             }
             
         }

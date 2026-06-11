@@ -98,11 +98,9 @@ namespace museum_api_sysprog_1.Web
                 //oslobadjanje semafora
                 queryEntry.Semaphore.Release();
             }
-
-            if (ids == null || ids.Count == 0)
-                return paintings;
-
-            //kreira se kolekcija, tako da se za svaki task proveri LRU kes
+        //   //kreira se kolekcija, tako da se za svaki task proveri LRU kes
+        //   //kolekcija svih "poslova koji su zapoceti"
+    
             IEnumerable<Task<Painting?>> fetchTasks = ids.Select(async id =>
            {
                // uzimamo entry iz tvog LRU kesa
@@ -158,7 +156,9 @@ namespace museum_api_sysprog_1.Web
                }
            });
 
+
             // Task.WhenAll ispaljuje svih 20 mreznih poziva odjednom, asinhrono
+            //kako bi sacekali da se svi zapoceti "poslovi zavrse"
             Painting?[] results = await Task.WhenAll(fetchTasks);
 
             // filtriramo uspesno mapirane objekte 

@@ -121,17 +121,18 @@ public class WebServer
                 return;
             }
 
+         //neka sitna ideja za koriscenje ContinueWith
+          Task responseTask=  RespondWithJson(context, paintings);
+           await responseTask.ContinueWith(t=>
+           {
+            sw.Stop();
+            Logger.Log("TIMER", $"Zahtev {fullQuery} obradjen za {sw.ElapsedMilliseconds}");
 
-            Task responseTask = RespondWithJson(context, paintings);
-            await responseTask.ContinueWith(t =>
-            {
-                sw.Stop();
-                Logger.Log("TIMER", $"Zahtev {fullQuery} obradjen za {sw.ElapsedMilliseconds}");
-                if (t.IsFaulted)
-                {
-                    Logger.Log("SERVER_ERROR", $"Prekinuta veza pre uspesnog primljenog odgovora");
-                }
-            }, TaskContinuationOptions.ExecuteSynchronously);
+            if(t.IsFaulted)
+               {
+                   Logger.Log("SERVER_ERROR",$"Prekinuta veza pre uspesnog primljenog odgovora");
+               }
+           },TaskContinuationOptions.ExecuteSynchronously);
         }
         catch (MuseumException ex)
         {
