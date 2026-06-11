@@ -18,7 +18,7 @@ public class WebServer
     */
     private readonly BlockingCollection<HttpListenerContext> _requestQueue = new();
     //dodala sam ovde (treba prebaciti u settings)
-    private readonly int _maxWorkerTasks = 4;
+    private readonly int _maxWorkerTasks = 12;
     private readonly List<Task> _workerTasks = new();
     private readonly WebService _webService;
     private readonly AppSettings _settings;
@@ -39,9 +39,10 @@ public class WebServer
         Logger.Log("SERVER", $"Web server pokrenut na {_settings.GetListenerPrefix()}");
         //rekle smo ostaje nit a pogledacemo cancelation tokene
 
-        Thread shutdownWatcher = new Thread(ListenForShutdown);
-        shutdownWatcher.IsBackground = true;
-        shutdownWatcher.Start();
+       // Thread shutdownWatcher = new Thread(ListenForShutdown);
+       // shutdownWatcher.IsBackground = true;
+        //shutdownWatcher.Start();
+        Task.Run(() => ListenForShutdown());
 
         for (int i = 0; i < _maxWorkerTasks; i++)
         {
@@ -77,6 +78,8 @@ public class WebServer
             if (token.IsCancellationRequested)
                 break;
             await Task.Run(() => HandleRequest(context));
+            //await HandleRequest()
+
             //gde treba continue with da dodamo? 
 
         }
@@ -153,7 +156,7 @@ public class WebServer
 
     }
 
-    private void ListenForShutdown()
+    private async Task ListenForShutdown()
     {
         Logger.Log("SERVER", "Pritisnite 'Q' za Graceful Shutdown.");
         while (!_cTokenSource.Token.IsCancellationRequested)
@@ -165,7 +168,8 @@ public class WebServer
                 _listener.Stop(); // Ovo prekida _listener.GetContext() 
                 break;
             }
-            Thread.Sleep(200); // Da ne opterecujemo procesor
+           // Thread.Sleep(200); // Da ne opterecujemo procesor
+           await Task.Delay(200,_cTokenSource.Token);
         }
     }
 

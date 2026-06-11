@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
+using System.Linq.Expressions;
 
 namespace museum_api_sysprog_1.Web
 {
@@ -13,6 +14,11 @@ namespace museum_api_sysprog_1.Web
         private readonly HttpClient _httpClient = new();
         //ovo sam dodala da probam samo
         private readonly ConcurrentDictionary<string, QueryCacheEntry> _queryCache = new();
+
+        //nesto sam pokusala sa ovim, nek ostane zakomentarisano, nisam nista postigla
+           //dodato
+           //jer Task.WaitAll salje sve zahteve odjednom i onda se Api buni
+           // private readonly SemaphoreSlim localSemafor=new SemaphoreSlim(5,5);
         public WebService(AppSettings settings, Cache cache)
         {
             _cache = cache;
@@ -70,10 +76,21 @@ namespace museum_api_sysprog_1.Web
                                                 .ToList();
 
                                 queryEntry.Ids = ids;
-                                queryEntry.Expiration = DateTime.Now.AddMinutes(5);
+                                queryEntry.Expiration = DateTime.Now.AddMinutes(2);
                             }
                         }
 
+                    }
+                    else if (response.StatusCode==HttpStatusCode.NotFound)
+                    {
+                        //pravimo praznu listu
+                        ids = new List<int>(); 
+                        Logger.Log("SERVER", $"[QUERY 404] Pojam [{query}] ne postoji na muzeju.");
+
+                        queryEntry.Ids = ids;
+                        queryEntry.Expiration = DateTime.Now.AddMinutes(2);
+
+                        
                     }
                 }
 
@@ -98,9 +115,12 @@ namespace museum_api_sysprog_1.Web
                 //oslobadjanje semafora
                 queryEntry.Semaphore.Release();
             }
+
+
+            
+
         //   //kreira se kolekcija, tako da se za svaki task proveri LRU kes
         //   //kolekcija svih "poslova koji su zapoceti"
-    
             IEnumerable<Task<Painting?>> fetchTasks = ids.Select(async id =>
            {
                // uzimamo entry iz tvog LRU kesa
@@ -109,20 +129,26 @@ namespace museum_api_sysprog_1.Web
 
                if (entry.Data != null && entry.IsValid)
                {
-                   return entry.Data;
+                   return entry.Data as Painting;
                }
+               //resavamo problem istovremenih zahteva ka apiju
+                //  await localSemafor.WaitAsync();
+                //   try
+                //    {
 
-               // asinhrono zakljucavanje 
-               await entry.Semaphore.WaitAsync();
-               try
-               {
-
+                    // asinhrono zakljucavanje 
+                    await entry.Semaphore.WaitAsync();
+                    try
+                     {
+ 
                    if (entry.Data != null && entry.IsValid)
                    {
                        Logger.Log("SERVER", $"[HIT] Slika {id} uzeta iz kesa.");
                        return entry.Data as Painting;
                    }
 
+                 
+                       
                    var dataUrl = $"https://collectionapi.metmuseum.org/public/collection/v1/objects/{id}";
                    var dataResult = await _httpClient.GetAsync(dataUrl);
 
@@ -135,7 +161,7 @@ namespace museum_api_sysprog_1.Web
                        entry.TimeCreated = DateTime.Now;
                        entry.IsValid = true;
 
-                       return entry.Data;
+                       return entry.Data as Painting;
                    }
                    else
                    {
@@ -143,20 +169,28 @@ namespace museum_api_sysprog_1.Web
                        Logger.Log("SERVER", $"Greska pri povlacenju ID-ja {id}: {dataResult.StatusCode}");
                        return null;
                    }
-               }
-               catch (Exception ex)
-               {
-                   entry.IsValid = false;
-                   Logger.Log("SERVER", $"Izuzetak za ID {id}: {ex.Message}");
-                   return null;
-               }
-               finally
-               {
-                   entry.Semaphore.Release(); // oslobadjamo semafor 
-               }
+                  
+                 }
+                    catch (Exception ex)
+                    {
+                         entry.IsValid = false;
+                        Logger.Log("SERVER", $"Izuzetak za ID {id}: {ex.Message}");
+                       return null;
+                     }
+                    finally
+                   {
+                     entry.Semaphore.Release(); // oslobadjamo semafor 
+                    }
+                    
+                //     }
+                //    finally
+                //    {
+                //        localSemafor.Release();
+                //    }
+             
+
            });
-
-
+        
             // Task.WhenAll ispaljuje svih 20 mreznih poziva odjednom, asinhrono
             //kako bi sacekali da se svi zapoceti "poslovi zavrse"
             Painting?[] results = await Task.WhenAll(fetchTasks);
