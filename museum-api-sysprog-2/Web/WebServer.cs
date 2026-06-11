@@ -33,27 +33,34 @@ public class WebServer
         _listener.Prefixes.Add(_settings.GetListenerPrefix());
     }
 
-    public void Start()
+    //jel treba ovo uopste mislim na async za start????
+    public async Task Start()
     {
         _listener.Start();
         Logger.Log("SERVER", $"Web server pokrenut na {_settings.GetListenerPrefix()}");
         //rekle smo ostaje nit a pogledacemo cancelation tokene
 
-       // Thread shutdownWatcher = new Thread(ListenForShutdown);
-       // shutdownWatcher.IsBackground = true;
+        // Thread shutdownWatcher = new Thread(ListenForShutdown);
+        // shutdownWatcher.IsBackground = true;
         //shutdownWatcher.Start();
-        Task.Run(() => ListenForShutdown());
+        //Jel ovo ok ?, jer  shutdowntask vec vraca task? 
+        var shutdownTask = ListenForShutdown();
+
 
         for (int i = 0; i < _maxWorkerTasks; i++)
         {
+            //TODO: 
+            //todo: jel i ovde taskrun treba da sklonimo jer je processqueueasync vec async
+            //todo: mislim da da ali nisam sigurna zato sam ostavila
             _workerTasks.Add(Task.Run(() => ProcessQueueAsync(_cTokenSource.Token)));
         }
         while (!_cTokenSource.Token.IsCancellationRequested)
         {
             try
             {
-                // GetContext blokira nit dok klijent ne posalje zahtev
-                var context = _listener.GetContext();
+                //da li je potrebno ovde jedno await i da getcontext promenimo u getcontextasync???
+                //samo da nit ne bi cekala i bila blokirana dok slusa nego da se vrrati u tp
+                var context = await _listener.GetContextAsync();
                 if (!_cTokenSource.Token.IsCancellationRequested)
                     _requestQueue.Add(context);
             }
@@ -77,11 +84,9 @@ public class WebServer
         {
             if (token.IsCancellationRequested)
                 break;
-            await Task.Run(() => HandleRequest(context));
-            //await HandleRequest()
-
-            //gde treba continue with da dodamo? 
-
+            //ovo prepraviti 
+            //await Task.Run(() => HandleRequest(context));
+            await HandleRequest(context);
         }
     }
     async private Task HandleRequest(object? state)
@@ -96,7 +101,7 @@ public class WebServer
             {
                 //to je zbog one dosadne ikonice
                 //ako nema parametara (da ne bi konstanto bio log sa praznim parametrima)
-                await RespondWithJson(context, new List<Painting>());
+                await RespondWithJsonAsync(context, new List<Painting>());
                 return;
             }
             var builder = new StringBuilder();
@@ -120,37 +125,37 @@ public class WebServer
             if (paintings == null || paintings!.Count == 0)
             {
                 context.Response.StatusCode = (int)HttpStatusCode.NotFound;
-                await RespondWithText(context, $"GRESKA: Umetnicko delo za upit {fullQuery} nije pronadjeno!");
+                await RespondWithTextAsync(context, $"GRESKA: Umetnicko delo za upit {fullQuery} nije pronadjeno!");
                 return;
             }
 
-         //neka sitna ideja za koriscenje ContinueWith
-          Task responseTask=  RespondWithJson(context, paintings);
-           await responseTask.ContinueWith(t=>
-           {
-            sw.Stop();
-            Logger.Log("TIMER", $"Zahtev {fullQuery} obradjen za {sw.ElapsedMilliseconds}");
+            //neka sitna ideja za koriscenje ContinueWith
+            Task responseTask = RespondWithJsonAsync(context, paintings);
+            await responseTask.ContinueWith(t =>
+            {
+                sw.Stop();
+                Logger.Log("TIMER", $"Zahtev {fullQuery} obradjen za {sw.ElapsedMilliseconds}");
 
-            if(t.IsFaulted)
-               {
-                   Logger.Log("SERVER_ERROR",$"Prekinuta veza pre uspesnog primljenog odgovora");
-               }
-           },TaskContinuationOptions.ExecuteSynchronously);
+                if (t.IsFaulted)
+                {
+                    Logger.Log("SERVER_ERROR", $"Prekinuta veza pre uspesnog primljenog odgovora");
+                }
+            }, TaskContinuationOptions.ExecuteSynchronously);
         }
         catch (MuseumException ex)
         {
             context.Response.StatusCode = ex.StatusCode != 0 ? ex.StatusCode : 500;
-            await RespondWithText(context, ex.ApiMessage ?? ex.Message);
+            await RespondWithTextAsync(context, ex.ApiMessage ?? ex.Message);
         }
         catch (OperationCanceledException ex)
         {
             Logger.Log("SERVER", $"Zahtev prekinut usled gašenja servera: {ex.Message}");
-            await RespondWithText(context, "Server se gasi. Zahtev je otkazan.");
+            await RespondWithTextAsync(context, "Server se gasi. Zahtev je otkazan.");
         }
         catch (Exception ex)
         {
             context.Response.StatusCode = 500;
-            await RespondWithText(context, "Interna greska servera:  " + ex.Message);
+            await RespondWithTextAsync(context, "Interna greska servera:  " + ex.Message);
 
         }
 
@@ -168,12 +173,12 @@ public class WebServer
                 _listener.Stop(); // Ovo prekida _listener.GetContext() 
                 break;
             }
-           // Thread.Sleep(200); // Da ne opterecujemo procesor
-           await Task.Delay(200,_cTokenSource.Token);
+            // Thread.Sleep(200); // Da ne opterecujemo procesor
+            await Task.Delay(200, _cTokenSource.Token);
         }
     }
 
-    private async Task RespondWithJson(HttpListenerContext context, object content)
+    private async Task RespondWithJsonAsync(HttpListenerContext context, object content)
     {
         try
         {
@@ -188,7 +193,7 @@ public class WebServer
         }
     }
 
-    private async Task RespondWithText(HttpListenerContext context, string text)
+    private async Task RespondWithTextAsync(HttpListenerContext context, string text)
     {
         try
         {

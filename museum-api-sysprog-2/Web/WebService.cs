@@ -16,9 +16,9 @@ namespace museum_api_sysprog_1.Web
         private readonly ConcurrentDictionary<string, QueryCacheEntry> _queryCache = new();
 
         //nesto sam pokusala sa ovim, nek ostane zakomentarisano, nisam nista postigla
-           //dodato
-           //jer Task.WaitAll salje sve zahteve odjednom i onda se Api buni
-           // private readonly SemaphoreSlim localSemafor=new SemaphoreSlim(5,5);
+        //dodato
+        //jer Task.WaitAll salje sve zahteve odjednom i onda se Api buni
+        // private readonly SemaphoreSlim localSemafor=new SemaphoreSlim(5,5);
         public WebService(AppSettings settings, Cache cache)
         {
             _cache = cache;
@@ -35,6 +35,143 @@ namespace museum_api_sysprog_1.Web
             Array.Sort(parts);
             return string.Join("&", parts).ToLower();
         }
+        public async Task<List<Painting>?> GetPainting(string query)
+        {
+            var key = GenerateKey(query);
+            var queryEntry = _queryCache.GetOrAdd(key, _ => new QueryCacheEntry());
+
+            //double lock
+            if (queryEntry.Ids != null && queryEntry.Expiration > DateTime.Now)
+            {
+                Logger.Log("SERVER", $"[HIT-LV1] Zahtev [{query}] nađen u kešu.");
+
+                //odmah vadimo iz kes-a
+                var fetchTasks = queryEntry.Ids.Select(id => FetchPaintingAsync(id));
+                var results = await Task.WhenAll(fetchTasks);
+                return results.Where(p => p != null).Cast<Painting>().ToList();
+            }
+
+            await queryEntry.Semaphore.WaitAsync();
+            Task<List<int>> idsTask;
+
+            try
+            {
+                if (queryEntry.Ids != null && queryEntry.Expiration > DateTime.Now)
+                {
+                    Logger.Log("SERVER", $"[LOCK HIT-LV1] ID-jevi uzeti iz kesa.");
+                    idsTask = Task.FromResult(queryEntry.Ids);
+                }
+                else
+                {
+                    Logger.Log("SERVER", $"[MISS-LV1] Direktan mrežni poziv za ID-jeve [{query}].");
+
+                    var ids = new List<int>();
+                    var url = _settings.GetApiUrl(query);
+
+                    var response = await _httpClient.GetAsync(url);
+
+                    if (response.IsSuccessStatusCode)
+                    {
+                        var searchJson = await response.Content.ReadAsStringAsync();
+                        using (JsonDocument document = JsonDocument.Parse(searchJson))
+                        {
+                            if (document.RootElement.TryGetProperty("objectIDs", out var idsElement) && idsElement.ValueKind == JsonValueKind.Array)
+                            {
+                                ids = idsElement.EnumerateArray().Take(20).Select(x => x.GetInt32()).ToList();
+                                queryEntry.Ids = ids;
+                                queryEntry.Expiration = DateTime.Now.AddMinutes(2);
+                            }
+                        }
+                    }
+                    else if (response.StatusCode == HttpStatusCode.NotFound)
+                    {
+                        queryEntry.Ids = ids;
+                        queryEntry.Expiration = DateTime.Now.AddMinutes(2);
+                        Logger.Log("SERVER", $"[QUERY 404] Pojam [{query}] ne postoji.");
+                    }
+                    //TODO: 
+                    //todo: nije li ovo greska? 
+                    idsTask = Task.FromResult(ids);
+                }
+            }
+            finally
+            {
+                queryEntry.Semaphore.Release();
+            }
+
+            Task<List<Painting>> paintingsTask = idsTask.ContinueWith(async t =>
+            {
+                // t.Result nam daje kompletnu listu svih ID-jeva sa prvog nivoa
+                List<int> sviIdjevi = t.Result;
+
+                //Logger.Log("CONTINUEWITH", $"Nivo 1 završen. Prosleđujem svih {sviIdjevi.Count} ID-jeva na Nivo 2.");
+                var sveSlikeTaskovi = sviIdjevi.Select(id => FetchPaintingAsync(id));
+                //skupljamo da bi dali jednom task-u
+                Painting?[] rezultatiSlika = await Task.WhenAll(sveSlikeTaskovi);
+                return rezultatiSlika.Where(p => p != null).Cast<Painting>().ToList();
+
+            }, TaskContinuationOptions.ExecuteSynchronously).Unwrap();
+            // .Unwrap() skida ugnježdeni Task i spaja Nivo 1 i Nivo 2 u jedan linearan tok
+            return await paintingsTask;
+        }
+
+
+        private async Task<Painting?> FetchPaintingAsync(int id)
+        {
+            var entry = _cache.GetOrCreateEntry(id);
+
+
+            if (entry.Data != null && entry.IsValid)
+                return entry.Data as Painting;
+
+            await entry.Semaphore.WaitAsync();
+
+            try
+            {
+                //double lock ovde
+                if (entry.Data != null && entry.IsValid)
+                {
+                    Logger.Log("SERVER", $"[HIT-LV2] Slika {id} uzeta iz keša nakon čekanja.");
+                    return entry.Data as Painting;
+                }
+
+                Logger.Log("SERVER", $"[MISS-LV2] Mrežni zahtev ka API-ju za sliku {id}.");
+                var dataUrl = $"https://collectionapi.metmuseum.org/public/collection/v1/objects/{id}";
+
+                var dataResult = await _httpClient.GetAsync(dataUrl);
+                if (!dataResult.IsSuccessStatusCode)
+                {
+                    Logger.Log("SERVER_ERROR", $"Greška sa muzejskog API-ja za ID {id}: {dataResult.StatusCode}. Resetujem keš stavku.");
+                    //ako je doslo do greske ovaj entri je nevalidan
+                    entry.Data = null;
+                    entry.IsValid = false;
+                    return null;
+                }
+
+                var dataJson = await dataResult.Content.ReadAsStringAsync();
+
+                entry.Data = JsonMapper.MapFromJson(dataJson);
+                entry.TimeCreated = DateTime.Now;
+                entry.IsValid = true;
+
+                return entry.Data as Painting;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log("SERVER_EXCEPTION", $"Izuzetak za sliku {id}: {ex.Message}. Resetujem keš stavku.");
+                //ako imamo problem sa serverom takodje postavljamo entri da nije validna
+                entry.Data = null;
+                entry.IsValid = false;
+                return null;
+            }
+            finally
+            {
+                entry.Semaphore.Release();
+            }
+        }
+
+        //Zakomentarisala sam ono sto smo imale i ono sto sam prepravljala jer sam se pogubila
+        /*
         public async Task<List<Painting>?> GetPainting(string query)
         {
             var paintings = new List<Painting>();
@@ -81,16 +218,16 @@ namespace museum_api_sysprog_1.Web
                         }
 
                     }
-                    else if (response.StatusCode==HttpStatusCode.NotFound)
+                    else if (response.StatusCode == HttpStatusCode.NotFound)
                     {
                         //pravimo praznu listu
-                        ids = new List<int>(); 
+                        ids = new List<int>();
                         Logger.Log("SERVER", $"[QUERY 404] Pojam [{query}] ne postoji na muzeju.");
 
                         queryEntry.Ids = ids;
                         queryEntry.Expiration = DateTime.Now.AddMinutes(2);
 
-                        
+
                     }
                 }
 
@@ -117,88 +254,145 @@ namespace museum_api_sysprog_1.Web
             }
 
 
-            
-
-        //   //kreira se kolekcija, tako da se za svaki task proveri LRU kes
-        //   //kolekcija svih "poslova koji su zapoceti"
-            IEnumerable<Task<Painting?>> fetchTasks = ids.Select(async id =>
-           {
-               // uzimamo entry iz tvog LRU kesa
-               var entry = _cache.GetOrCreateEntry(id);
 
 
-               if (entry.Data != null && entry.IsValid)
-               {
-                   return entry.Data as Painting;
-               }
-               //resavamo problem istovremenih zahteva ka apiju
+            //kreira se kolekcija, tako da se za svaki task proveri LRU kes
+            //kolekcija svih "poslova koji su zapoceti"
+            //dodala sam metodu za id-eve tj za jedno nabavljanje slike 
+            /* IEnumerable<Task<Painting?>> fetchTasks = ids.Select(async id =>
+            {
+                // uzimamo entry iz tvog LRU kesa
+                var entry = _cache.GetOrCreateEntry(id);
+
+
+                if (entry.Data != null && entry.IsValid)
+                {
+                    return entry.Data as Painting;
+                }
+                //resavamo problem istovremenih zahteva ka apiju
                 //  await localSemafor.WaitAsync();
                 //   try
                 //    {
 
-                    // asinhrono zakljucavanje 
-                    await entry.Semaphore.WaitAsync();
-                    try
-                     {
- 
-                   if (entry.Data != null && entry.IsValid)
-                   {
-                       Logger.Log("SERVER", $"[HIT] Slika {id} uzeta iz kesa.");
-                       return entry.Data as Painting;
-                   }
+                // asinhrono zakljucavanje 
+                await entry.Semaphore.WaitAsync();
+                try
+                {
 
-                 
-                       
-                   var dataUrl = $"https://collectionapi.metmuseum.org/public/collection/v1/objects/{id}";
-                   var dataResult = await _httpClient.GetAsync(dataUrl);
-
-                   if (dataResult.IsSuccessStatusCode)
-                   {
-                       var dataJson = await dataResult.Content.ReadAsStringAsync();
-
-
-                       entry.Data = JsonMapper.MapFromJson(dataJson);
-                       entry.TimeCreated = DateTime.Now;
-                       entry.IsValid = true;
-
-                       return entry.Data as Painting;
-                   }
-                   else
-                   {
-                       entry.IsValid = false;
-                       Logger.Log("SERVER", $"Greska pri povlacenju ID-ja {id}: {dataResult.StatusCode}");
-                       return null;
-                   }
-                  
-                 }
-                    catch (Exception ex)
+                    if (entry.Data != null && entry.IsValid)
                     {
-                         entry.IsValid = false;
-                        Logger.Log("SERVER", $"Izuzetak za ID {id}: {ex.Message}");
-                       return null;
-                     }
-                    finally
-                   {
-                     entry.Semaphore.Release(); // oslobadjamo semafor 
+                        Logger.Log("SERVER", $"[HIT] Slika {id} uzeta iz kesa.");
+                        return entry.Data as Painting;
                     }
-                    
-                //     }
-                //    finally
-                //    {
-                //        localSemafor.Release();
-                //    }
-             
 
-           });
-        
-            // Task.WhenAll ispaljuje svih 20 mreznih poziva odjednom, asinhrono
-            //kako bi sacekali da se svi zapoceti "poslovi zavrse"
-            Painting?[] results = await Task.WhenAll(fetchTasks);
 
-            // filtriramo uspesno mapirane objekte 
-            return results.Where(p => p != null).Cast<Painting>().ToList();
+
+                    var dataUrl = $"https://collectionapi.metmuseum.org/public/collection/v1/objects/{id}";
+                    var dataResult = await _httpClient.GetAsync(dataUrl);
+
+                    if (dataResult.IsSuccessStatusCode)
+                    {
+                        var dataJson = await dataResult.Content.ReadAsStringAsync();
+
+
+                        entry.Data = JsonMapper.MapFromJson(dataJson);
+                        entry.TimeCreated = DateTime.Now;
+                        entry.IsValid = true;
+
+                        return entry.Data as Painting;
+                    }
+                    else
+                    {
+                        entry.IsValid = false;
+                        Logger.Log("SERVER", $"Greska pri povlacenju ID-ja {id}: {dataResult.StatusCode}");
+                        return null;
+                    }
+
+                }
+                catch (Exception ex)
+                {
+                    entry.IsValid = false;
+                    Logger.Log("SERVER", $"Izuzetak za ID {id}: {ex.Message}");
+                    return null;
+                }
+                finally
+                {
+                    entry.Semaphore.Release(); // oslobadjamo semafor 
+                }
+            });
+
+
+            Task<List<Painting>> paintingsTask =
+                Task.Run(() => ids)
+                    .ContinueWith(async t =>
+                    {
+                        List<Painting> paintings = new();
+
+                        foreach (int id in t.Result)
+                        {
+                            //za svaki id se poziva fetch painting
+                            var painting = await FetchPaintingAsync(id);
+
+                            if (painting != null)
+                                paintings.Add(painting);
+                        }
+
+                        return paintings;
+
+                    }, TaskContinuationOptions.OnlyOnRanToCompletion)
+                    .Unwrap();
+
+            return await paintingsTask;
 
         }
+
+        private async Task<Painting?> FetchPaintingAsync(int id)
+        {
+            var entry = _cache.GetOrCreateEntry(id);
+
+            if (entry.Data != null && entry.IsValid)
+                return entry.Data as Painting;
+
+            await entry.Semaphore.WaitAsync();
+
+            try
+            {
+                if (entry.Data != null && entry.IsValid)
+                {
+                    Logger.Log("SERVER", $"[HIT] Slika {id} uzeta iz kesa.");
+                    return entry.Data as Painting;
+                }
+
+                var dataUrl =
+                    $"https://collectionapi.metmuseum.org/public/collection/v1/objects/{id}";
+
+                var dataResult = await _httpClient.GetAsync(dataUrl);
+
+                if (!dataResult.IsSuccessStatusCode)
+                {
+                    entry.IsValid = false;
+                    return null;
+                }
+
+                var dataJson = await dataResult.Content.ReadAsStringAsync();
+
+                entry.Data = JsonMapper.MapFromJson(dataJson);
+                entry.TimeCreated = DateTime.Now;
+                entry.IsValid = true;
+
+                return entry.Data as Painting;
+            }
+            catch
+            {
+                entry.IsValid = false;
+                return null;
+            }
+            finally
+            {
+                entry.Semaphore.Release();
+            }
+        }
+    }*/
     }
 
 }

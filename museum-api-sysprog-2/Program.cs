@@ -1,15 +1,14 @@
-﻿namespace museum_api_sysprog_1;
+﻿using System.Threading.Tasks;
+
+namespace museum_api_sysprog_1;
 
 class Program
 {
-    static void Main(string[] args)
+    static async Task Main(string[] args)
     {
         Console.WriteLine("=== MUSEUM API SERVER STARTUP ===");
         try
         {
-            //TODO: obrisi ovo i vrati u normalu
-            //ThreadPool.SetMinThreads(500, 500);
-
             var settings = new AppSettings
             {
                 Port = 8080,
@@ -21,7 +20,7 @@ class Program
             cache.StartCleanupThread();
             WebService webService = new WebService(settings, cache);
             WebServer server = new WebServer(settings, webService);
-            server.Start();
+            await server.Start();
             Console.ResetColor();
         }
         catch (Exception ex)
