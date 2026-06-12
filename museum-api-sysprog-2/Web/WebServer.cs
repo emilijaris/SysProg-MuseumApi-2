@@ -16,6 +16,7 @@ public class WebServer
     .Add(item) probudice se jedan radnik/task i preuzeti ovo 
     .GetConsumingEnumerable() – svi raspolozivi taskovi pokrecu petlju i proveravaju da li postoji taskova za rad
     */
+    //channel promeni 
     private readonly BlockingCollection<HttpListenerContext> _requestQueue = new();
     //dodala sam ovde (treba prebaciti u settings)
     private readonly int _maxWorkerTasks = 12;

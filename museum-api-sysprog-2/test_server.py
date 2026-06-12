@@ -9,7 +9,7 @@ import time
 #4.num_request=10 queries= ["sunflower","gold", "egypt", "monet", "statue"], pribavljanje po 20 slika, neke slike ce biti zabranjene
 
 URL = "http://localhost:8080/"
-NUM_REQUESTS = 24
+NUM_REQUESTS = 10
 QUERIES = ["sunflower","gold", "egypt", "monet", "statue", "glass"]#, "roman", "silk","lilies"]#,"landscape","garden","forest","roses","woman","man","child","portrait","dancer","cat","dog","horse","bird","lion","dragon","mirror"]
 
 def send_request(query):
